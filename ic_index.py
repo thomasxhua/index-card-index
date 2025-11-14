@@ -21,8 +21,8 @@ SEARCH_RGX_DISTANCE  = r"distance\(([0-9]+)\)"
 MSG_MANUAL_IC_INDEX = f"""\
 Usage:
   python ic_index.py                    Open graphical interface.
-  python ic_index.py {FLAG_INDEX} <path>     Index a folder.
-  python ic_index.py {FLAG_SEARCH} <path>    Search an indexed folder.
+  python ic_index.py {FLAG_INDEX} <path>     Index a directory <path>.
+  python ic_index.py {FLAG_SEARCH} <path>    Search an indexed directory <path>.
   python ic_index.py {FLAG_HELP}             Display usages.\
 """
 MSG_MANUAL_SEARCH = f"""\
@@ -41,8 +41,9 @@ MSG_UNKNOWN_COMMAND     = lambda flag: f"Unknown flag '{flag}'. {MSG_HELP}"
 MSG_SET_DISTANCE        = lambda n: f"Set Levenshtein distance to {n}."
 MSG_FOUND_MATCHES       = lambda n,fs,d: f"Found {n} matches in {fs} files with distance={d}:"
 MSG_PATH_DOESNT_EXIST   = lambda path: f"Couldn't find '{path}'."
-MSG_INDEX_ING           = lambda path: f"Indexing '{path}' (recursively)."
-MSG_INDEX_PROCESSING    = lambda path: f"Processing image '{path}'."
+MSG_INDEX_ING           = lambda path: f"Indexing '{path}' recursively."
+MSG_INDEX_PROCESSING    = lambda path: f".. Processing image '{path}'."
+MSG_INDEX_SKIPPING      = lambda path: f".. Skipping '{path}'."
 MSG_SEARCH_NO_INDEX     = lambda path: f"Index file '{path}' not found. Run indexing now? [{CMD_YES}/n] "
 
 def start_gui():
@@ -58,11 +59,13 @@ def start_index_cli(path):
     print(MSG_INDEX_ING(path))
     texts = {}
     for subpath in Path(path).rglob("*"):
-        if os.path.isfile(subpath):
+        if not Path(subpath).suffix in Image.registered_extensions():
+            if not Path(subpath).is_dir():
+                print(MSG_INDEX_SKIPPING(subpath))
+        else:
             print(MSG_INDEX_PROCESSING(subpath))
             img                 = Image.open(subpath)
             texts[str(subpath)] = pytesseract.image_to_string(img)
-    # TODO: path has to a folder rn
     with open(get_dictionary_path(path), "wb") as file:
         pickle.dump(texts, file)
     
