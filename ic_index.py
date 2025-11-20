@@ -2,9 +2,9 @@ import sys
 import re
 import os
 import pickle
-from PIL import Image
 from pathlib import Path
 
+from PIL import Image
 import pytesseract
 from fuzzysearch import find_near_matches
 
