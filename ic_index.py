@@ -4,6 +4,7 @@ import os
 import pickle
 from pathlib import Path
 import shlex
+import hashlib
 
 from PIL import Image
 import pytesseract
@@ -43,33 +44,63 @@ MSG_FOUND_MATCHES       = lambda n,fs,d: f"Found {n} matches in {fs} files with 
 MSG_PATH_DOESNT_EXIST   = lambda path: f"Couldn't find '{path}'."
 MSG_INDEX_ING           = lambda path: f"Indexing '{path}' recursively."
 MSG_INDEX_PROCESSING    = lambda path: f".. Processing image '{path}'."
-MSG_INDEX_SKIPPING      = lambda path: f".. Skipping '{path}'."
+MSG_INDEX_SKIPPING      = lambda path: f".. Skipping '{path}' (not an recognized image)."
+MSG_INDEX_ALREADY       = lambda path: f".. Skipping '{path}' (already indexed)."
+MSG_INDEX_EXISTING      = lambda path: f"Found existing index file '{path}'."
 MSG_SEARCH_NO_INDEX     = lambda path: f"Index file '{path}' not found. Run indexing now? [{CMD_YES}/n] "
 
 def start_gui():
     print("NOT IMPLEMENTED")
 
 def get_dictionary_path(path):
-    return Path(path)/".ici.pkl"
+    return Path(path) / ".ici.pkl"
 
-def start_index_cli(path):
+# Source: https://docs.vultr.com/python/examples/find-hash-of-file
+def get_sha256_hash(file_path):
+    hash_sha256 = hashlib.sha256() 
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_sha256.update(chunk)
+    return hash_sha256.hexdigest()
+    
+def index_texts(path):
     if not os.path.exists(path):
         print(MSG_PATH_DOESNT_EXIST(path))
         return
-    print(MSG_INDEX_ING(path))
-    texts = {}
+    texts_path   = get_dictionary_path(path)
+    texts_hashed = None
+    if os.path.exists(texts_path):
+        print(MSG_INDEX_EXISTING(texts_path))
+        with open(texts_path, "rb") as texts_file:
+            texts_hashed = pickle.load(texts_file)
+    texts_hashed_new = {}
     for subpath in sorted(Path(path).rglob("*")):
         if not Path(subpath).suffix in Image.registered_extensions():
             if not Path(subpath).is_dir():
                 print(MSG_INDEX_SKIPPING(subpath))
         else:
-            print(MSG_INDEX_PROCESSING(subpath))
-            img                 = Image.open(subpath)
-            texts[str(subpath)] = pytesseract.image_to_string(img)
+            str_subpath = str(subpath)
+            if texts_hashed:
+                sha256 = get_sha256_hash(str_subpath)
+                if str_subpath in texts_hashed:
+                    _,h = texts_hashed[str_subpath]
+                    if h == sha256:
+                        print(MSG_INDEX_ALREADY(str_subpath))
+                        texts_hashed_new[str_subpath] = texts_hashed[str_subpath]
+                        continue
+            print(MSG_INDEX_PROCESSING(str_subpath))
+            img    = Image.open(subpath)
+            text   = pytesseract.image_to_string(img)
+            sha256 = get_sha256_hash(subpath)
+            texts_hashed_new[str_subpath] = (text,sha256)
     with open(get_dictionary_path(path), "wb") as file:
-        pickle.dump(texts, file)
+        pickle.dump(texts_hashed, file)
     
-def search(texts, terms, l_dist=1):
+def start_index_cli(path):
+    print(MSG_INDEX_ING(path))
+    index_texts(path)
+
+def search_texts(texts, terms, l_dist=1):
     if not terms:
         return {}
     matches = {}
@@ -99,7 +130,8 @@ def start_search_cli(path):
             print(MSG_SEARCH_IMPOSSIBLE)
             return
     with open(texts_path, "rb") as texts_file:
-        texts = pickle.load(texts_file)
+        texts_hashed = pickle.load(texts_file)
+        texts        = {k:ts for k,(ts,h) in texts_hashed}
         print(MSG_MANUAL_SEARCH)
         l_dist = 1
         while True:
@@ -111,7 +143,7 @@ def start_search_cli(path):
                 l_dist = int(distance.group(1))
                 print(MSG_SET_DISTANCE(l_dist))
             elif terms:
-                matches = search(texts, shlex.split(terms), l_dist)
+                matches = search_texts(texts, shlex.split(terms), l_dist)
                 for text_name,ms in matches.items():
                     print(f"{text_name}: {ms}")
 
