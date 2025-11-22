@@ -3,6 +3,7 @@ import re
 import os
 import pickle
 from pathlib import Path
+import shlex
 
 from PIL import Image
 import pytesseract
@@ -34,7 +35,6 @@ Entering search. Usage:
 
 MSG_HELP              = f"Use '{FLAG_HELP}' for help."
 MSG_NO_PATH           = f"No path specified. {MSG_HELP}"
-MSG_NO_MATCHES        = "No matches found."
 MSG_SEARCH_IMPOSSIBLE = f"Cannot search unindexed files. Use '{FLAG_INDEX}' to start an indexing."
 
 MSG_UNKNOWN_COMMAND     = lambda flag: f"Unknown flag '{flag}'. {MSG_HELP}"
@@ -58,7 +58,7 @@ def start_index_cli(path):
         return
     print(MSG_INDEX_ING(path))
     texts = {}
-    for subpath in Path(path).rglob("*"):
+    for subpath in sorted(Path(path).rglob("*")):
         if not Path(subpath).suffix in Image.registered_extensions():
             if not Path(subpath).is_dir():
                 print(MSG_INDEX_SKIPPING(subpath))
@@ -69,6 +69,26 @@ def start_index_cli(path):
     with open(get_dictionary_path(path), "wb") as file:
         pickle.dump(texts, file)
     
+def search(texts, terms, l_dist=1):
+    if not terms:
+        return {}
+    matches = {}
+    for i in range(0, len(terms)):
+        term = terms[i]
+        for text_name,text in texts.items():
+            current_matches = find_near_matches(term, text, max_l_dist=l_dist)
+            for match in current_matches:
+                # ignore adding file for in non-first matches
+                if i == 0 and text_name not in matches:
+                    matches[text_name] = { term: [] }
+                if text_name in matches:
+                    if term not in matches[text_name]:
+                        matches[text_name][term] = []
+                    matches[text_name][term].append(match)
+        # clean up files after further searches
+        matches = {k:v for k,v in matches.items() if term in v}
+    return matches
+
 def start_search_cli(path):
     texts_path = get_dictionary_path(path)
     if not os.path.exists(texts_path):
@@ -83,23 +103,17 @@ def start_search_cli(path):
         print(MSG_MANUAL_SEARCH)
         l_dist = 1
         while True:
-            term = input("> ")
-            if term == CMD_SEARCH_EXIT:
+            terms = input("> ")
+            if terms == CMD_SEARCH_EXIT:
                 break
-            distance = re.search(SEARCH_RGX_DISTANCE, term)
+            distance = re.search(SEARCH_RGX_DISTANCE, terms)
             if distance:
                 l_dist = int(distance.group(1))
                 print(MSG_SET_DISTANCE(l_dist))
-            elif term:
-                matches = []
-                for file_name,text in texts.items():
-                    matches += [(file_name, m) for m in find_near_matches(term, text, max_l_dist=l_dist)]
-                if matches:
-                    print(MSG_FOUND_MATCHES(len(matches), len(texts), l_dist))
-                    for file_name,m in sorted(matches, key=lambda pair: pair[1].dist):
-                        print(f"  d={m.dist}: '{m.matched}'\t in: '{file_name}', {m.start}-{m.end}")
-                else:
-                    print(MSG_NO_MATCHES)
+            elif terms:
+                matches = search(texts, shlex.split(terms), l_dist)
+                for text_name,ms in matches.items():
+                    print(f"{text_name}: {ms}")
 
 def get_path():
     if len(sys.argv) > 2:
@@ -129,4 +143,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
