@@ -191,12 +191,13 @@ def gui(index_folder=None):
         nonlocal preview
         for child in results.descendants():
             child.delete()
+        results.clear()
         matches = search_texts(texts, input_search.value)
         def change_image(src):
             preview.set_source(src)
         for k,v in matches.items():
             with results:
-                ui.item(f"{k}", on_click=lambda k=k: change_image(k))
+                ui.item(f"{k}: {v}", on_click=lambda k=k: change_image(k))
     # top bar
     with ui.row().classes("w-full items-center"):
         # title
