@@ -7,8 +7,11 @@ import shlex
 import hashlib
 
 from PIL import Image
-import pytesseract
+import pytesseract; pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+
+#import tesserocr # TODO: export TESSDATA_PREFIX=/usr/share/tessdata/
 from fuzzysearch import find_near_matches
+from nicegui import ui
 
 FLAG_HELP, FLAG_HELP_S     = "--help", "-h"
 FLAG_INDEX, FLAG_INDEX_S   = "--index", "-i"
@@ -41,7 +44,7 @@ MSG_SEARCH_IMPOSSIBLE = f"Cannot search unindexed files. Use '{FLAG_INDEX}' to s
 MSG_UNKNOWN_COMMAND     = lambda flag: f"Unknown flag '{flag}'. {MSG_HELP}"
 MSG_SET_DISTANCE        = lambda n: f"Set Levenshtein distance to {n}."
 MSG_FOUND_MATCHES       = lambda n,fs,d: f"Found {n} matches in {fs} files with distance={d}:"
-MSG_PATH_DOESNT_EXIST   = lambda path: f"Couldn't find '{path}'."
+MSG_PATH_DOESNT_EXIST   = lambda path: f"'{path}' is not a directory."
 MSG_INDEX_ING           = lambda path: f"Indexing '{path}' recursively."
 MSG_INDEX_PROCESSING    = lambda path: f".. Processing image '{path}'."
 MSG_INDEX_SKIPPING      = lambda path: f".. Skipping '{path}' (not an recognized image)."
@@ -49,13 +52,13 @@ MSG_INDEX_ALREADY       = lambda path: f".. Skipping '{path}' (already indexed).
 MSG_INDEX_EXISTING      = lambda path: f"Found existing index file '{path}'."
 MSG_SEARCH_NO_INDEX     = lambda path: f"Index file '{path}' not found. Run indexing now? [{CMD_YES}/n] "
 
-def start_gui():
-    print("NOT IMPLEMENTED")
+def fancy_print(printer, text):
+    printer(text)
 
 def get_dictionary_path(path):
     return Path(path) / ".ici.pkl"
 
-# Source: https://docs.vultr.com/python/examples/find-hash-of-file
+# source: https://docs.vultr.com/python/examples/find-hash-of-file
 def get_sha256_hash(file_path):
     hash_sha256 = hashlib.sha256() 
     with open(file_path, "rb") as f:
@@ -63,21 +66,29 @@ def get_sha256_hash(file_path):
             hash_sha256.update(chunk)
     return hash_sha256.hexdigest()
     
-def index_texts(path):
-    if not os.path.exists(path):
-        print(MSG_PATH_DOESNT_EXIST(path))
+def index_texts(path, printer=print, status_printer=None):
+    printer(os.environ["PATH"])
+    if not os.path.exists(path) or not Path(path).is_dir():
+        printer(MSG_PATH_DOESNT_EXIST(path))
         return
     texts_path   = get_dictionary_path(path)
     texts_hashed = None
     if os.path.exists(texts_path):
-        print(MSG_INDEX_EXISTING(texts_path))
+        printer(MSG_INDEX_EXISTING(texts_path))
+        # TODO: doesnt pick up on nested .ici files
         with open(texts_path, "rb") as texts_file:
             texts_hashed = pickle.load(texts_file)
     texts_hashed_new = {}
-    for subpath in sorted(Path(path).rglob("*")):
+    texts            = {}
+    subpaths     = sorted(Path(path).rglob("*"))
+    len_subpaths = len(subpaths)
+    for i in range(0,len_subpaths):
+        if status_printer:
+            status_printer(f"{i}/{len_subpaths-1}")
+        subpath = subpaths[i].resolve()
         if not Path(subpath).suffix in Image.registered_extensions():
             if not Path(subpath).is_dir():
-                print(MSG_INDEX_SKIPPING(subpath))
+                printer(MSG_INDEX_SKIPPING(subpath))
         else:
             str_subpath = str(subpath)
             if texts_hashed:
@@ -85,16 +96,18 @@ def index_texts(path):
                 if str_subpath in texts_hashed:
                     _,h = texts_hashed[str_subpath]
                     if h == sha256:
-                        print(MSG_INDEX_ALREADY(str_subpath))
+                        printer(MSG_INDEX_ALREADY(str_subpath))
                         texts_hashed_new[str_subpath] = texts_hashed[str_subpath]
                         continue
-            print(MSG_INDEX_PROCESSING(str_subpath))
+            printer(MSG_INDEX_PROCESSING(str_subpath))
             img    = Image.open(subpath)
             text   = pytesseract.image_to_string(img)
             sha256 = get_sha256_hash(subpath)
             texts_hashed_new[str_subpath] = (text,sha256)
+            texts[str_subpath]            = text
     with open(get_dictionary_path(path), "wb") as file:
         pickle.dump(texts_hashed, file)
+    return texts
     
 def start_index_cli(path):
     print(MSG_INDEX_ING(path))
@@ -147,6 +160,59 @@ def start_search_cli(path):
                 for text_name,ms in matches.items():
                     print(f"{text_name}: {ms}")
 
+GUI_TITLE  = "Index Card Index"
+GUI_INPUT_PATH   = "Enter path..."
+GUI_INPUT_SEARCH = "Search..."
+GUI_BUTTON_INDEX = "Index"
+GUI_LABEL_INDEX  = "Index status: "
+
+GUI_LOG_LINE_LIMIT = 100
+
+def gui():
+    dark  = ui.dark_mode()
+    texts = None
+    def gui_printer(s):
+        lines = gui_log.value.splitlines()
+        lines.insert(0, s)
+        if len(lines) > GUI_LOG_LINE_LIMIT:
+            lines = lines[:GUI_LOG_LINE_LIMIT]
+        gui_log.value = "\n".join(lines)
+    def index_path():
+        nonlocal texts
+        texts = index_texts(input_path.value, gui_printer, ui_status.set_text)
+    def search_terms():
+        nonlocal texts
+        if texts:
+            search_texts(texts, input_search.value)
+    # top bar
+    with ui.row().classes("w-full items-center"):
+        # title
+        ui.label(GUI_TITLE).classes("text-xl")
+        ui.space()
+        # dark mode switch
+        switch = ui.switch("Night",
+                           on_change=lambda e: dark.enable() if e.value else dark.disable())
+        switch.set_value(True)
+    # path select
+    with ui.row().classes("w-full items-center gap-4"):
+        input_path = ui.input(placeholder=GUI_INPUT_PATH).on("keydown.enter", index_path).style("flex: 1;")
+        ui.button(GUI_BUTTON_INDEX, on_click=index_path)
+    # program
+    with ui.row().classes("w-full h-full no-wrap"):
+        with ui.column().classes("w-1/2 gap-2 items-start"):
+            with ui.row().classes("w-full items-center gap-4"):
+                ui.label(GUI_LABEL_INDEX)
+                ui_status = ui.label()
+            #gui_printer = ui.label("Currently").classes("italic")
+            gui_log = ui.textarea().props("readonly").classes("w-full italic")
+            with ui.row().classes("w-full items-center gap-4"):
+                input_search = ui.input(placeholder=GUI_INPUT_SEARCH).on("keydown.enter", search_terms).style("flex: 1;")
+                ui.button(icon="search", on_click=search_terms)
+        with ui.column().classes("w-1/2 items-start"):
+            ui.label("Image Preview:")
+            ui.image("test_data/pierce_shannon/a/000.png")
+    ui.run()
+
 def get_path():
     if len(sys.argv) > 2:
         return sys.argv[2]
@@ -154,6 +220,7 @@ def get_path():
 
 def main():
     if len(sys.argv) <= 1:
+        gui()
         return
     flag = sys.argv[1]
     if flag in [FLAG_HELP, FLAG_HELP_S]:
@@ -173,7 +240,7 @@ def main():
     else:
         print(MSG_UNKNOWN_COMMAND(flag))
 
-if __name__ == "__main__":
+if __name__ in ["__main__", "__mp_main__"]:
     main()
 
 
